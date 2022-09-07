@@ -23,12 +23,17 @@ type Server struct {
 
 func main() {
 
+	//dialer := &kafka.Dialer{
+	//	Timeout:   2 * time.Second,
+	//	DualStack: true,
+	//}
 	var Server = Server{
 		Clients: make(map[string]*websocket.Conn),
 		Msg:     "",
 		Reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers: []string{"localhost:9093"},
 			Topic:   "kafka-chat",
+			//Dialer:  dialer,
 		}),
 		Writer: &kafka.Writer{
 			Addr:     kafka.TCP("localhost:9093"),
@@ -36,6 +41,7 @@ func main() {
 			Balancer: &kafka.LeastBytes{},
 		},
 	}
+	Server.Reader.SetOffset(kafka.LastOffset)
 
 	http.HandleFunc("/chat", Server.upgradeRequest)
 
@@ -62,7 +68,6 @@ func (srv Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 
 	srv.Clients[r.URL.Query().Get("userID")] = ws
 	senderID := r.URL.Query().Get("senderID")
-
 	go func() {
 		for {
 			// read msg
@@ -75,29 +80,29 @@ func (srv Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 				Key:   []byte(senderID),
 				Value: []byte(srv.Msg),
 			}
-
+			// write in kafka
 			err = srv.Writer.WriteMessages(context.Background(), msg)
 			if err != nil {
-				log.Println("")
+				log.Printf("Error in writing message %s\n", err)
+				break
 			}
 		}
 	}()
 
 	for {
+		// read from kafka
 		msg, rErr := srv.Reader.ReadMessage(context.Background())
 		if rErr != nil {
 			log.Println("Error in reading from kafka")
 			return
 		}
-
-		if senderID == string(msg.Key) {
-			conn, ok := srv.Clients[senderID]
-			if ok {
-				err := conn.WriteJSON(string(msg.Value))
-				if err != nil {
-					log.Printf("Error in writing msg %s", err)
-					break
-				}
+		//log.Printf("%v %v %v", string(msg.Key), string(msg.Value), senderID)
+		conn, ok := srv.Clients[string(msg.Key)]
+		if ok {
+			err := conn.WriteJSON(string(msg.Value))
+			if err != nil {
+				log.Printf("Error in writing msg %s", err)
+				break
 			}
 		}
 	}
