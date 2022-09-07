@@ -1,33 +1,51 @@
 package main
 
 import (
+	"context"
 	"github.com/gorilla/websocket"
+	"github.com/segmentio/kafka-go"
 	"log"
 	"net/http"
+	"os"
 )
-
-var clients = make(map[string]*websocket.Conn)
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 }
 
-type Message struct {
-	Msg string `json:"message"`
+type Server struct {
+	Clients map[string]*websocket.Conn
+	Msg     string
+	Reader  *kafka.Reader
+	Writer  *kafka.Writer
 }
 
 func main() {
 
-	http.HandleFunc("/chat", upgradeRequest)
+	var Server = Server{
+		Clients: make(map[string]*websocket.Conn),
+		Msg:     "",
+		Reader: kafka.NewReader(kafka.ReaderConfig{
+			Brokers: []string{"localhost:9093"},
+			Topic:   "kafka-chat",
+		}),
+		Writer: &kafka.Writer{
+			Addr:     kafka.TCP("localhost:9093"),
+			Topic:    "kafka-chat",
+			Balancer: &kafka.LeastBytes{},
+		},
+	}
 
-	err := http.ListenAndServe(":8081", nil)
+	http.HandleFunc("/chat", Server.upgradeRequest)
+
+	err := http.ListenAndServe(":"+os.Getenv("PORT"), nil)
 	if err != nil {
 		log.Fatalf("Failed to connect to server %s", err)
 	}
 }
 
-func upgradeRequest(w http.ResponseWriter, r *http.Request) {
+func (srv Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade request %s\n", err)
@@ -42,24 +60,44 @@ func upgradeRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}(ws)
 
-	clients[r.URL.Query().Get("userID")] = ws
+	srv.Clients[r.URL.Query().Get("userID")] = ws
+	senderID := r.URL.Query().Get("senderID")
 
-	var msg Message
+	go func() {
+		for {
+			// read msg
+			err := ws.ReadJSON(&srv.Msg)
+			if err != nil {
+				log.Printf("Error in reading the json msg %s", err)
+				break
+			}
+			msg := kafka.Message{
+				Key:   []byte(senderID),
+				Value: []byte(srv.Msg),
+			}
+
+			err = srv.Writer.WriteMessages(context.Background(), msg)
+			if err != nil {
+				log.Println("")
+			}
+		}
+	}()
 
 	for {
-		// read msg
-		err := ws.ReadJSON(&msg.Msg)
-		if err != nil {
-			log.Printf("Error in reading the json msg %s", err)
-			break
+		msg, rErr := srv.Reader.ReadMessage(context.Background())
+		if rErr != nil {
+			log.Println("Error in reading from kafka")
+			return
 		}
 
-		conn, ok := clients[r.URL.Query().Get("senderID")]
-		if ok {
-			err := conn.WriteJSON(msg.Msg)
-			if err != nil {
-				log.Printf("Error in writing msg %s", err)
-				break
+		if senderID == string(msg.Key) {
+			conn, ok := srv.Clients[senderID]
+			if ok {
+				err := conn.WriteJSON(string(msg.Value))
+				if err != nil {
+					log.Printf("Error in writing msg %s", err)
+					break
+				}
 			}
 		}
 	}
