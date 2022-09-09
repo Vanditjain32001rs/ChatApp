@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/segmentio/kafka-go"
 	"log"
 	"net/http"
 	"os"
+	"sync"
 )
 
 var upgrader = websocket.Upgrader{
@@ -22,7 +24,7 @@ type Server struct {
 }
 
 func main() {
-	var Server = Server{
+	var Server = &Server{
 		Clients: make(map[string]*websocket.Conn),
 		Msg:     "",
 		Reader: kafka.NewReader(kafka.ReaderConfig{
@@ -36,17 +38,22 @@ func main() {
 			Balancer: &kafka.LeastBytes{},
 		},
 	}
-	Server.Reader.SetOffset(kafka.LastOffset)
+	err := Server.Reader.SetOffset(kafka.LastOffset)
+	if err != nil {
+		log.Printf("Error in setting the offset of kafka %s", err)
+		return
+	}
 
+	fmt.Println("hello")
 	http.HandleFunc("/chat", Server.upgradeRequest)
 
-	err := http.ListenAndServe(":"+os.Getenv("PORT"), nil)
+	err = http.ListenAndServe(":"+os.Getenv("PORT"), nil)
 	if err != nil {
 		log.Fatalf("Failed to connect to server %s", err)
 	}
 }
 
-func (srv Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
+func (srv *Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade request %s\n", err)
@@ -63,6 +70,8 @@ func (srv Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 
 	srv.Clients[r.URL.Query().Get("userID")] = ws
 	senderID := r.URL.Query().Get("senderID")
+	wg := sync.WaitGroup{}
+	wg.Add(2)
 	go func() {
 		for {
 			// read msg
@@ -82,23 +91,27 @@ func (srv Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+		wg.Done()
 	}()
-
-	for {
-		// read from kafka
-		msg, rErr := srv.Reader.ReadMessage(context.Background())
-		if rErr != nil {
-			log.Println("Error in reading from kafka")
-			return
-		}
-		//log.Printf("%v %v %v", string(msg.Key), string(msg.Value), senderID)
-		conn, ok := srv.Clients[string(msg.Key)]
-		if ok {
-			err := conn.WriteJSON(string(msg.Value))
-			if err != nil {
-				log.Printf("Error in writing msg %s", err)
-				break
+	go func() {
+		for {
+			// read from kafka
+			msg, rErr := srv.Reader.ReadMessage(context.Background())
+			if rErr != nil {
+				log.Printf("Error in reading from kafka %s\n", rErr)
+				return
+			}
+			//log.Printf("%v %v %v", string(msg.Key), string(msg.Value), senderID)
+			conn, ok := srv.Clients[string(msg.Key)]
+			if ok {
+				err := conn.WriteJSON(string(msg.Value))
+				if err != nil {
+					log.Printf("Error in writing msg %s", err)
+					break
+				}
 			}
 		}
-	}
+		wg.Done()
+	}()
+	wg.Wait()
 }
