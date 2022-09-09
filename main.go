@@ -22,11 +22,6 @@ type Server struct {
 }
 
 func main() {
-
-	//dialer := &kafka.Dialer{
-	//	Timeout:   2 * time.Second,
-	//	DualStack: true,
-	//}
 	var Server = Server{
 		Clients: make(map[string]*websocket.Conn),
 		Msg:     "",
