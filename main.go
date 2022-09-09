@@ -44,7 +44,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("hello")
+	fmt.Println("Welcome to Chat")
 	http.HandleFunc("/chat", Server.upgradeRequest)
 
 	err = http.ListenAndServe(":"+os.Getenv("PORT"), nil)
@@ -54,6 +54,7 @@ func main() {
 }
 
 func (srv *Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
+	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade request %s\n", err)
