@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -68,9 +69,9 @@ func (srv *Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}(ws)
-
-	srv.Clients[r.URL.Query().Get("userID")] = ws
-	senderID := r.URL.Query().Get("senderID")
+	userID := r.URL.Query().Get("userId")
+	senderID := r.URL.Query().Get("senderId")
+	srv.Clients[userID] = ws
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 	go func() {
@@ -81,8 +82,9 @@ func (srv *Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 				log.Printf("Error in reading the json msg %s", err)
 				break
 			}
+			k := fmt.Sprintf("%s+%s", senderID, userID)
 			msg := kafka.Message{
-				Key:   []byte(senderID),
+				Key:   []byte(k),
 				Value: []byte(srv.Msg),
 			}
 			// write in kafka
@@ -103,12 +105,25 @@ func (srv *Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			//log.Printf("%v %v %v", string(msg.Key), string(msg.Value), senderID)
-			conn, ok := srv.Clients[string(msg.Key)]
+			id := string(msg.Key)
+			i := strings.Index(id, "+")
+			sID := id[0:i]
+			uID := id[i+1:]
+			//log.Printf(id)
+			conn, ok := srv.Clients[sID]
 			if ok {
 				err := conn.WriteJSON(string(msg.Value))
 				if err != nil {
 					log.Printf("Error in writing msg %s", err)
 					break
+				}
+				sConn, ok := srv.Clients[uID]
+				if ok {
+					err = sConn.WriteJSON(string(msg.Value))
+					if err != nil {
+						log.Printf("Error in writing msg to the sender %s", err)
+						break
+					}
 				}
 			}
 		}
