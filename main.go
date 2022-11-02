@@ -7,7 +7,6 @@ import (
 	"github.com/segmentio/kafka-go"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 )
@@ -17,9 +16,14 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
+type MSG struct {
+	ID  int    `json:"id"`
+	Msg string `json:"message"`
+}
+
 type Server struct {
 	Clients map[string]*websocket.Conn
-	Msg     string
+	Msg     MSG
 	Reader  *kafka.Reader
 	Writer  *kafka.Writer
 }
@@ -27,7 +31,7 @@ type Server struct {
 func main() {
 	var Server = &Server{
 		Clients: make(map[string]*websocket.Conn),
-		Msg:     "",
+		Msg:     MSG{},
 		Reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers: []string{"localhost:9093"},
 			Topic:   "kafka-chat",
@@ -48,7 +52,7 @@ func main() {
 	fmt.Println("Welcome to Chat")
 	http.HandleFunc("/chat", Server.upgradeRequest)
 
-	err = http.ListenAndServe(":"+os.Getenv("PORT"), nil)
+	err = http.ListenAndServe(":8080", nil)
 	if err != nil {
 		log.Fatalf("Failed to connect to server %s", err)
 	}
@@ -70,7 +74,7 @@ func (srv *Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}(ws)
 	userID := r.URL.Query().Get("userId")
-	senderID := r.URL.Query().Get("senderId")
+	//senderID := r.URL.Query().Get("senderId")
 	srv.Clients[userID] = ws
 	wg := sync.WaitGroup{}
 	wg.Add(2)
@@ -82,10 +86,10 @@ func (srv *Server) upgradeRequest(w http.ResponseWriter, r *http.Request) {
 				log.Printf("Error in reading the json msg %s", err)
 				break
 			}
-			k := fmt.Sprintf("%s+%s", senderID, userID)
+			k := fmt.Sprintf("%s+%s", srv.Msg.ID, userID)
 			msg := kafka.Message{
 				Key:   []byte(k),
-				Value: []byte(srv.Msg),
+				Value: []byte(srv.Msg.Msg),
 			}
 			// write in kafka
 			err = srv.Writer.WriteMessages(context.Background(), msg)
